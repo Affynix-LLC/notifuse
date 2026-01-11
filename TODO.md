@@ -1,21 +1,24 @@
 # TODO
 
-- docs: blog setup / theme / post
-- docs: custom events + segments for goals
+## Content
 
 - create notifuse blog
 - pages on homepage for:
+
   - rich contact profiles with custom events + segments
   - newsletter campaigns
   - transactional API
   - blog posts
 
-## Content
-
 - send newsletter to all contacts+previous customers
 - post supabase on twitter and facebook
 - page vs mailerlite
 - page vs mautic
+
+## Plugins
+
+- https://docs.dify.ai/en/develop-plugin/getting-started/getting-started-dify-plugin
+- n8N
 
 ## Eventual features
 
@@ -26,4 +29,3 @@
 ## Roadmap
 
 - check for updates + newsletter box
-- automations with async triggers

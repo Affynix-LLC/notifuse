@@ -739,32 +739,8 @@ func testTransactionalSendWithCCAndBCC(t *testing.T, client *testutil.APIClient,
 
 		// Wait for SMTP server to process all emails
 		t.Log("Waiting for emails to be delivered to Mailpit...")
-		time.Sleep(3 * time.Second)
-
-		// Check Mailpit to verify all 7 emails were received
-		t.Log("Checking Mailpit API for email count...")
-		mailpitResp, err := http.Get("http://localhost:8025/api/v1/messages")
-		require.NoError(t, err, "Failed to connect to Mailpit API")
-		defer func() { _ = mailpitResp.Body.Close() }()
-
-		var mailpitData struct {
-			Total    int `json:"total"`
-			Messages []struct {
-				Subject string `json:"Subject"`
-				To      []struct {
-					Address string `json:"Address"`
-				} `json:"To"`
-				Cc []struct {
-					Address string `json:"Address"`
-				} `json:"Cc"`
-				Bcc []struct {
-					Address string `json:"Address"`
-				} `json:"Bcc"`
-			} `json:"messages"`
-		}
-
-		err = json.NewDecoder(mailpitResp.Body).Decode(&mailpitData)
-		require.NoError(t, err, "Failed to decode Mailpit response")
+		mailpitData, err := testutil.WaitForMailpitMessagesFast(t, "Test Email Subject", 5*time.Second)
+		require.NoError(t, err, "Failed to get emails from Mailpit")
 
 		t.Logf("Mailpit reports %d total emails", mailpitData.Total)
 
@@ -1004,17 +980,8 @@ func testTransactionalSendWithCustomFromName(t *testing.T, client *testutil.APIC
 
 		// Wait for SMTP server to process email
 		t.Log("Waiting for email to be delivered to Mailpit...")
-		time.Sleep(3 * time.Second)
-
-		// Check Mailpit to verify the From header contains custom from_name
-		t.Log("Checking Mailpit API for email with custom from_name...")
-		mailpitResp, err := http.Get("http://localhost:8025/api/v1/messages")
-		require.NoError(t, err, "Failed to connect to Mailpit API")
-		defer func() { _ = mailpitResp.Body.Close() }()
-
-		var mailpitData testutil.MailpitMessagesResponse
-		err = json.NewDecoder(mailpitResp.Body).Decode(&mailpitData)
-		require.NoError(t, err, "Failed to decode Mailpit response")
+		mailpitData, err := testutil.WaitForMailpitMessagesFast(t, "Test Email Subject", 5*time.Second)
+		require.NoError(t, err, "Failed to get emails from Mailpit")
 
 		t.Logf("Mailpit reports %d total emails", mailpitData.Total)
 
@@ -1134,16 +1101,8 @@ func testTransactionalSendWithCustomFromName(t *testing.T, client *testutil.APIC
 		t.Logf("Email sent successfully with message ID: %s (using default from_name)", messageID)
 
 		// Wait for email delivery
-		time.Sleep(3 * time.Second)
-
-		// Check Mailpit to verify email was sent (with default from_name)
-		mailpitResp, err := http.Get("http://localhost:8025/api/v1/messages")
-		require.NoError(t, err)
-		defer func() { _ = mailpitResp.Body.Close() }()
-
-		var mailpitData testutil.MailpitMessagesResponse
-		err = json.NewDecoder(mailpitResp.Body).Decode(&mailpitData)
-		require.NoError(t, err)
+		mailpitData, err := testutil.WaitForMailpitMessagesFast(t, "Test Email Subject", 5*time.Second)
+		require.NoError(t, err, "Failed to get emails from Mailpit")
 
 		// Verify at least one email was sent
 		foundEmail := false
@@ -1225,18 +1184,326 @@ func testTransactionalSendWithCustomFromName(t *testing.T, client *testutil.APIC
 		t.Logf("Email sent successfully with message ID: %s (empty from_name, using default)", messageID)
 
 		// Wait for email delivery
-		time.Sleep(3 * time.Second)
-
-		// Verify email was sent
-		mailpitResp, err := http.Get("http://localhost:8025/api/v1/messages")
-		require.NoError(t, err)
-		defer func() { _ = mailpitResp.Body.Close() }()
-
-		var mailpitData testutil.MailpitMessagesResponse
-		err = json.NewDecoder(mailpitResp.Body).Decode(&mailpitData)
-		require.NoError(t, err)
+		mailpitData, err := testutil.WaitForMailpitMessagesFast(t, "Test Email Subject", 5*time.Second)
+		require.NoError(t, err, "Failed to get emails from Mailpit")
 
 		assert.Greater(t, mailpitData.Total, 0, "Should have sent at least one email")
 		t.Log("✅ Email sent successfully - empty from_name correctly falls back to default")
+	})
+}
+
+// TestTransactionalAttachmentValidation tests that attachment validation works correctly
+func TestTransactionalAttachmentValidation(t *testing.T) {
+	testutil.SkipIfShort(t)
+	testutil.SetupTestEnvironment()
+	defer testutil.CleanupTestEnvironment()
+
+	suite := testutil.NewIntegrationTestSuite(t, func(cfg *config.Config) testutil.AppInterface {
+		return app.NewApp(cfg)
+	})
+	defer func() { suite.Cleanup() }()
+
+	client := suite.APIClient
+	factory := suite.DataFactory
+
+	// Create test user and workspace
+	user, err := factory.CreateUser()
+	require.NoError(t, err)
+	workspace, err := factory.CreateWorkspace()
+	require.NoError(t, err)
+
+	// Add user to workspace as owner
+	err = factory.AddUserToWorkspace(user.ID, workspace.ID, "owner")
+	require.NoError(t, err)
+
+	// Set up SMTP email provider for testing
+	_, err = factory.SetupWorkspaceWithSMTPProvider(workspace.ID)
+	require.NoError(t, err)
+
+	// Login to get auth token
+	err = client.Login(user.Email, "password")
+	require.NoError(t, err)
+	client.SetWorkspaceID(workspace.ID)
+
+	// Create a template for testing
+	template, err := factory.CreateTemplate(workspace.ID)
+	require.NoError(t, err)
+
+	// Create a transactional notification
+	notification, err := factory.CreateTransactionalNotification(workspace.ID,
+		testutil.WithTransactionalNotificationID("attachment-validation-test"),
+		testutil.WithTransactionalNotificationChannels(domain.ChannelTemplates{
+			domain.TransactionalChannelEmail: domain.ChannelTemplate{
+				TemplateID: template.ID,
+				Settings:   map[string]interface{}{},
+			},
+		}),
+	)
+	require.NoError(t, err)
+
+	// Valid base64 content (small PDF)
+	validBase64Content := "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiA+PgplbmRvYmoKeHJlZgowIDQKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDA5IDAwMDAwIG4gCjAwMDAwMDAwNTggMDAwMDAgbiAKMDAwMDAwMDExNSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXplIDQgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjE2OQolJUVPRgo="
+
+	t.Run("should reject attachment with missing filename", func(t *testing.T) {
+		sendRequest := map[string]interface{}{
+			"id": notification.ID,
+			"contact": map[string]interface{}{
+				"email": "test@example.com",
+			},
+			"channels": []string{"email"},
+			"email_options": map[string]interface{}{
+				"attachments": []map[string]interface{}{
+					{
+						"filename":     "", // Missing filename
+						"content":      validBase64Content,
+						"content_type": "application/pdf",
+					},
+				},
+			},
+		}
+
+		resp, err := client.SendTransactionalNotification(sendRequest)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "Should reject attachment without filename")
+
+		var result map[string]interface{}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		require.NoError(t, err)
+
+		assert.Contains(t, result, "error")
+		assert.Contains(t, result["error"].(string), "filename")
+		t.Log("✅ Attachment without filename is properly rejected")
+	})
+
+	t.Run("should reject attachment with missing content", func(t *testing.T) {
+		sendRequest := map[string]interface{}{
+			"id": notification.ID,
+			"contact": map[string]interface{}{
+				"email": "test@example.com",
+			},
+			"channels": []string{"email"},
+			"email_options": map[string]interface{}{
+				"attachments": []map[string]interface{}{
+					{
+						"filename":     "test.pdf",
+						"content":      "", // Missing content
+						"content_type": "application/pdf",
+					},
+				},
+			},
+		}
+
+		resp, err := client.SendTransactionalNotification(sendRequest)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "Should reject attachment without content")
+
+		var result map[string]interface{}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		require.NoError(t, err)
+
+		assert.Contains(t, result, "error")
+		assert.Contains(t, result["error"].(string), "content")
+		t.Log("✅ Attachment without content is properly rejected")
+	})
+
+	t.Run("should reject attachment with invalid base64 content", func(t *testing.T) {
+		sendRequest := map[string]interface{}{
+			"id": notification.ID,
+			"contact": map[string]interface{}{
+				"email": "test@example.com",
+			},
+			"channels": []string{"email"},
+			"email_options": map[string]interface{}{
+				"attachments": []map[string]interface{}{
+					{
+						"filename":     "test.pdf",
+						"content":      "not-valid-base64!!!", // Invalid base64
+						"content_type": "application/pdf",
+					},
+				},
+			},
+		}
+
+		resp, err := client.SendTransactionalNotification(sendRequest)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "Should reject attachment with invalid base64 content")
+
+		var result map[string]interface{}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		require.NoError(t, err)
+
+		assert.Contains(t, result, "error")
+		assert.Contains(t, result["error"].(string), "base64")
+		t.Log("✅ Attachment with invalid base64 content is properly rejected")
+	})
+
+	t.Run("should reject attachment with dangerous file extension (.exe)", func(t *testing.T) {
+		sendRequest := map[string]interface{}{
+			"id": notification.ID,
+			"contact": map[string]interface{}{
+				"email": "test@example.com",
+			},
+			"channels": []string{"email"},
+			"email_options": map[string]interface{}{
+				"attachments": []map[string]interface{}{
+					{
+						"filename":     "malware.exe", // Dangerous extension
+						"content":      validBase64Content,
+						"content_type": "application/octet-stream",
+					},
+				},
+			},
+		}
+
+		resp, err := client.SendTransactionalNotification(sendRequest)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "Should reject attachment with .exe extension")
+
+		var result map[string]interface{}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		require.NoError(t, err)
+
+		assert.Contains(t, result, "error")
+		assert.Contains(t, result["error"].(string), ".exe")
+		t.Log("✅ Attachment with .exe extension is properly rejected")
+	})
+
+	t.Run("should reject attachment with invalid disposition", func(t *testing.T) {
+		sendRequest := map[string]interface{}{
+			"id": notification.ID,
+			"contact": map[string]interface{}{
+				"email": "test@example.com",
+			},
+			"channels": []string{"email"},
+			"email_options": map[string]interface{}{
+				"attachments": []map[string]interface{}{
+					{
+						"filename":     "test.pdf",
+						"content":      validBase64Content,
+						"content_type": "application/pdf",
+						"disposition":  "invalid-disposition", // Invalid
+					},
+				},
+			},
+		}
+
+		resp, err := client.SendTransactionalNotification(sendRequest)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "Should reject attachment with invalid disposition")
+
+		var result map[string]interface{}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		require.NoError(t, err)
+
+		assert.Contains(t, result, "error")
+		assert.Contains(t, result["error"].(string), "disposition")
+		t.Log("✅ Attachment with invalid disposition is properly rejected")
+	})
+
+	t.Run("should reject attachment with path traversal in filename", func(t *testing.T) {
+		sendRequest := map[string]interface{}{
+			"id": notification.ID,
+			"contact": map[string]interface{}{
+				"email": "test@example.com",
+			},
+			"channels": []string{"email"},
+			"email_options": map[string]interface{}{
+				"attachments": []map[string]interface{}{
+					{
+						"filename":     "../../../etc/passwd", // Path traversal
+						"content":      validBase64Content,
+						"content_type": "text/plain",
+					},
+				},
+			},
+		}
+
+		resp, err := client.SendTransactionalNotification(sendRequest)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode, "Should reject attachment with path traversal")
+
+		var result map[string]interface{}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		require.NoError(t, err)
+
+		assert.Contains(t, result, "error")
+		assert.Contains(t, result["error"].(string), "path")
+		t.Log("✅ Attachment with path traversal in filename is properly rejected")
+	})
+
+	t.Run("should accept valid attachment and send email", func(t *testing.T) {
+		// Clear Mailpit before test
+		err := testutil.ClearMailpitMessages(t)
+		if err != nil {
+			t.Logf("Warning: Could not clear Mailpit messages: %v", err)
+		}
+
+		sendRequest := map[string]interface{}{
+			"id": notification.ID,
+			"contact": map[string]interface{}{
+				"email": "attachment-test@example.com",
+			},
+			"channels": []string{"email"},
+			"data": map[string]interface{}{
+				"test_message": "Email with attachment",
+			},
+			"email_options": map[string]interface{}{
+				"attachments": []map[string]interface{}{
+					{
+						"filename":     "test-document.pdf",
+						"content":      validBase64Content,
+						"content_type": "application/pdf",
+						"disposition":  "attachment",
+					},
+				},
+			},
+		}
+
+		resp, err := client.SendTransactionalNotification(sendRequest)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "Should accept valid attachment and send email")
+
+		var result map[string]interface{}
+		err = json.NewDecoder(resp.Body).Decode(&result)
+		require.NoError(t, err)
+
+		assert.Contains(t, result, "message_id")
+		messageID := result["message_id"].(string)
+		assert.NotEmpty(t, messageID, "Message ID should not be empty")
+
+		t.Logf("✅ Email with valid attachment sent successfully with message ID: %s", messageID)
+
+		// Wait for email delivery
+		mailpitData, err := testutil.WaitForMailpitMessagesFast(t, "", 5*time.Second)
+		require.NoError(t, err, "Failed to get emails from Mailpit")
+
+		assert.Greater(t, mailpitData.Total, 0, "Should have sent at least one email")
+
+		// Find our email and verify it has an attachment
+		foundEmailWithAttachment := false
+		for _, msgSummary := range mailpitData.Messages {
+			if msgSummary.Attachments > 0 {
+				foundEmailWithAttachment = true
+				t.Logf("✅ Found email with %d attachment(s)", msgSummary.Attachments)
+				break
+			}
+		}
+
+		assert.True(t, foundEmailWithAttachment, "Should find email with attachment in Mailpit")
+		t.Log("✅ Email with attachment was successfully delivered to Mailpit")
 	})
 }

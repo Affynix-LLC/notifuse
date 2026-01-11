@@ -14,28 +14,30 @@ import (
 )
 
 type ListService struct {
-	repo            domain.ListRepository
-	workspaceRepo   domain.WorkspaceRepository
-	contactListRepo domain.ContactListRepository
-	contactRepo     domain.ContactRepository
-	authService     domain.AuthService
-	emailService    domain.EmailServiceInterface
-	logger          logger.Logger
-	apiEndpoint     string
-	blogCache       cache.Cache
+	repo               domain.ListRepository
+	workspaceRepo      domain.WorkspaceRepository
+	contactListRepo    domain.ContactListRepository
+	contactRepo        domain.ContactRepository
+	messageHistoryRepo domain.MessageHistoryRepository
+	authService        domain.AuthService
+	emailService       domain.EmailServiceInterface
+	logger             logger.Logger
+	apiEndpoint        string
+	blogCache          cache.Cache
 }
 
-func NewListService(repo domain.ListRepository, workspaceRepo domain.WorkspaceRepository, contactListRepo domain.ContactListRepository, contactRepo domain.ContactRepository, authService domain.AuthService, emailService domain.EmailServiceInterface, logger logger.Logger, apiEndpoint string, blogCache cache.Cache) *ListService {
+func NewListService(repo domain.ListRepository, workspaceRepo domain.WorkspaceRepository, contactListRepo domain.ContactListRepository, contactRepo domain.ContactRepository, messageHistoryRepo domain.MessageHistoryRepository, authService domain.AuthService, emailService domain.EmailServiceInterface, logger logger.Logger, apiEndpoint string, blogCache cache.Cache) *ListService {
 	return &ListService{
-		repo:            repo,
-		workspaceRepo:   workspaceRepo,
-		contactListRepo: contactListRepo,
-		contactRepo:     contactRepo,
-		authService:     authService,
-		emailService:    emailService,
-		logger:          logger,
-		apiEndpoint:     apiEndpoint,
-		blogCache:       blogCache,
+		repo:               repo,
+		workspaceRepo:      workspaceRepo,
+		contactListRepo:    contactListRepo,
+		contactRepo:        contactRepo,
+		messageHistoryRepo: messageHistoryRepo,
+		authService:        authService,
+		emailService:       emailService,
+		logger:             logger,
+		apiEndpoint:        apiEndpoint,
+		blogCache:          blogCache,
 	}
 }
 
@@ -388,29 +390,6 @@ func (s *ListService) SubscribeToLists(ctx context.Context, payload *domain.Subs
 			return fmt.Errorf("failed to build template data: %w", err)
 		}
 
-		// send welcome email
-		if contactList.Status == domain.ContactListStatusActive && list.WelcomeTemplate != nil {
-
-			request := domain.SendEmailRequest{
-				WorkspaceID:      workspace.ID,
-				IntegrationID:    integrationID,
-				MessageID:        messageID,
-				ExternalID:       nil,
-				Contact:          contact,
-				TemplateConfig:   domain.ChannelTemplate{TemplateID: list.WelcomeTemplate.ID},
-				MessageData:      domain.MessageData{Data: templateData},
-				TrackingSettings: trackingSettings,
-				EmailProvider:    marketingEmailProvider,
-				EmailOptions:     domain.EmailOptions{},
-			}
-			err = s.emailService.SendEmailForTemplate(ctx, request)
-
-			if err != nil {
-				s.logger.WithField("email", contactList.Email).Error(fmt.Sprintf("Failed to send welcome email: %v", err))
-				return fmt.Errorf("failed to send welcome email: %w", err)
-			}
-		}
-
 		// double optin
 		if contactList.Status == domain.ContactListStatusPending && list.DoubleOptInTemplate != nil {
 
@@ -478,21 +457,6 @@ func (s *ListService) UnsubscribeFromLists(ctx context.Context, payload *domain.
 		}
 	}
 
-	// Get contact
-	contact, err := s.contactRepo.GetContactByEmail(ctx, workspace.ID, payload.Email)
-	if err != nil {
-		s.logger.WithField("email", payload.Email).Error(fmt.Sprintf("Failed to get contact: %v", err))
-		return fmt.Errorf("failed to get contact: %w", err)
-	}
-
-	// Get email provider for sending confirmation emails
-	marketingEmailProvider, integrationID, err := workspace.GetEmailProviderWithIntegrationID(true)
-	if err != nil {
-		s.logger.WithField("workspace_id", workspace.ID).Error(fmt.Sprintf("Failed to get marketing email provider: %v", err))
-		// We'll continue even if we can't get the email provider
-		// This allows unsubscribe to work even if we can't send confirmation emails
-	}
-
 	// get the lists
 	lists, err := s.repo.GetLists(ctx, workspace.ID)
 	if err != nil {
@@ -523,66 +487,26 @@ func (s *ListService) UnsubscribeFromLists(ctx context.Context, payload *domain.
 				Error(fmt.Sprintf("Failed to unsubscribe from list: %v", err))
 			return fmt.Errorf("failed to unsubscribe from list: %w", err)
 		}
+	}
 
-		// Send unsubscribe confirmation email if template is set and email provider exists
-		if list.UnsubscribeTemplate != nil && marketingEmailProvider != nil {
-			messageID := uuid.New().String()
-
-			// Use workspace CustomEndpointURL if provided, otherwise use the default API endpoint
-			endpoint := s.apiEndpoint
-			if workspace.Settings.CustomEndpointURL != nil && *workspace.Settings.CustomEndpointURL != "" {
-				endpoint = *workspace.Settings.CustomEndpointURL
-			}
-
-			trackingSettings := notifuse_mjml.TrackingSettings{
-				Endpoint:       endpoint,
-				EnableTracking: workspace.Settings.EmailTrackingEnabled,
-				UTMSource:      workspace.Settings.WebsiteURL,
-				UTMMedium:      "email",
-				UTMCampaign:    list.Name,
-				UTMContent:     messageID,
-				WorkspaceID:    workspace.ID,
-				MessageID:      messageID,
-			}
-
-			req := domain.TemplateDataRequest{
-				WorkspaceID:        workspace.ID,
-				WorkspaceSecretKey: workspace.Settings.SecretKey,
-				ContactWithList: domain.ContactWithList{
-					Contact:  contact,
-					ListID:   listID,
-					ListName: list.Name,
-				},
-				MessageID:        messageID,
-				TrackingSettings: trackingSettings,
-				Broadcast:        nil,
-			}
-			templateData, err := domain.BuildTemplateData(req)
-
-			if err != nil {
-				s.logger.WithField("email", payload.Email).Error(fmt.Sprintf("Failed to build template data: %v", err))
-				return fmt.Errorf("failed to build template data: %w", err)
-			}
-
-			request := domain.SendEmailRequest{
-				WorkspaceID:      workspace.ID,
-				IntegrationID:    integrationID,
-				MessageID:        messageID,
-				ExternalID:       nil,
-				Contact:          contact,
-				TemplateConfig:   domain.ChannelTemplate{TemplateID: list.UnsubscribeTemplate.ID},
-				MessageData:      domain.MessageData{Data: templateData},
-				TrackingSettings: trackingSettings,
-				EmailProvider:    marketingEmailProvider,
-				EmailOptions:     domain.EmailOptions{},
-			}
-			err = s.emailService.SendEmailForTemplate(ctx, request)
-
-			if err != nil {
-				s.logger.WithField("email", payload.Email).Error(fmt.Sprintf("Failed to send unsubscribe confirmation email: %v", err))
-				return fmt.Errorf("failed to send unsubscribe confirmation email: %w", err)
-			}
+	// Update message history with unsubscribe event if MessageID is provided
+	// This enables broadcast statistics to track unsubscribes via notification center
+	if payload.MessageID != "" {
+		now := time.Now()
+		updates := []domain.MessageEventUpdate{
+			{
+				ID:        payload.MessageID,
+				Event:     domain.MessageEventUnsubscribed,
+				Timestamp: now,
+			},
+		}
+		if err := s.messageHistoryRepo.SetStatusesIfNotSet(ctx, workspace.ID, updates); err != nil {
+			// Log but don't fail - the contact is already unsubscribed
+			// Message history update is for analytics only
+			s.logger.WithField("message_id", payload.MessageID).
+				Warn(fmt.Sprintf("Failed to update message history for unsubscribe: %v", err))
 		}
 	}
+
 	return nil
 }

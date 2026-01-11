@@ -121,8 +121,6 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 			is_public BOOLEAN NOT NULL DEFAULT FALSE,
 			description TEXT,
 			double_optin_template JSONB,
-			welcome_template JSONB,
-			unsubscribe_template JSONB,
 			created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			deleted_at TIMESTAMP WITH TIME ZONE
@@ -168,6 +166,7 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 			winner_sent_at TIMESTAMP WITH TIME ZONE,
 			test_phase_recipient_count INTEGER DEFAULT 0,
 			winner_phase_recipient_count INTEGER DEFAULT 0,
+			enqueued_count INTEGER DEFAULT 0,
 			created_at TIMESTAMP WITH TIME ZONE NOT NULL,
 			updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
 			started_at TIMESTAMP WITH TIME ZONE,
@@ -182,6 +181,7 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 			contact_email VARCHAR(255) NOT NULL,
 			external_id VARCHAR(255),
 			broadcast_id VARCHAR(255),
+			automation_id VARCHAR(36),
 			list_id VARCHAR(32),
 			template_id VARCHAR(32) NOT NULL,
 			template_version INTEGER NOT NULL,
@@ -202,7 +202,8 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 			updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_history_contact_email ON message_history(contact_email)`,
-		`CREATE INDEX IF NOT EXISTS idx_message_history_broadcast_id ON message_history(broadcast_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_message_history_broadcast_id ON message_history(broadcast_id) WHERE broadcast_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_message_history_automation_id ON message_history(automation_id) WHERE automation_id IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_message_history_template_id ON message_history(template_id, template_version)`,
 		`CREATE INDEX IF NOT EXISTS idx_message_history_created_at_id ON message_history(created_at DESC, id DESC)`,
 		`CREATE TABLE IF NOT EXISTS transactional_notifications (
@@ -380,6 +381,93 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_pending ON webhook_deliveries(next_attempt_at) WHERE status IN ('pending', 'failed') AND attempts < max_attempts`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_subscription ON webhook_deliveries(subscription_id, created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status)`,
+		// Automation tables (nodes embedded as JSONB in automations)
+		`CREATE TABLE IF NOT EXISTS automations (
+			id VARCHAR(36) PRIMARY KEY,
+			workspace_id VARCHAR(36) NOT NULL,
+			name VARCHAR(255) NOT NULL,
+			status VARCHAR(20) DEFAULT 'draft',
+			list_id VARCHAR(36),
+			trigger_config JSONB NOT NULL,
+			trigger_sql TEXT,
+			root_node_id VARCHAR(36),
+			nodes JSONB DEFAULT '[]',
+			stats JSONB DEFAULT '{}',
+			created_at TIMESTAMPTZ DEFAULT NOW(),
+			updated_at TIMESTAMPTZ DEFAULT NOW(),
+			deleted_at TIMESTAMPTZ
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_automations_workspace_status ON automations(workspace_id, status) WHERE deleted_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_automations_list ON automations(list_id, status)`,
+		`CREATE TABLE IF NOT EXISTS contact_automations (
+			id VARCHAR(36) PRIMARY KEY,
+			automation_id VARCHAR(36) NOT NULL REFERENCES automations(id),
+			contact_email VARCHAR(255) NOT NULL,
+			current_node_id VARCHAR(36),
+			status VARCHAR(20) DEFAULT 'active',
+			exit_reason VARCHAR(50),
+			entered_at TIMESTAMPTZ DEFAULT NOW(),
+			scheduled_at TIMESTAMPTZ,
+			context JSONB DEFAULT '{}',
+			retry_count INTEGER DEFAULT 0,
+			last_error TEXT,
+			last_retry_at TIMESTAMPTZ,
+			max_retries INTEGER DEFAULT 3,
+			UNIQUE(automation_id, contact_email, entered_at)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_contact_automations_scheduled ON contact_automations(scheduled_at) WHERE status = 'active' AND scheduled_at IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_contact_automations_automation ON contact_automations(automation_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_contact_automations_email ON contact_automations(contact_email, status)`,
+		`CREATE TABLE IF NOT EXISTS automation_node_executions (
+			id VARCHAR(36) PRIMARY KEY,
+			contact_automation_id VARCHAR(36) NOT NULL REFERENCES contact_automations(id) ON DELETE CASCADE,
+			automation_id VARCHAR(36),
+			node_id VARCHAR(36) NOT NULL,
+			node_type VARCHAR(50) NOT NULL,
+			action VARCHAR(20) NOT NULL,
+			entered_at TIMESTAMPTZ DEFAULT NOW(),
+			completed_at TIMESTAMPTZ,
+			duration_ms INTEGER,
+			output JSONB DEFAULT '{}',
+			error TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_node_executions_contact_automation ON automation_node_executions(contact_automation_id, entered_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_node_executions_automation ON automation_node_executions(automation_id, node_id, action)`,
+		`CREATE TABLE IF NOT EXISTS automation_trigger_log (
+			id VARCHAR(36) PRIMARY KEY,
+			automation_id VARCHAR(36) NOT NULL REFERENCES automations(id),
+			contact_email VARCHAR(255) NOT NULL,
+			triggered_at TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE(automation_id, contact_email)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_trigger_log_automation ON automation_trigger_log(automation_id, triggered_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_trigger_log_contact ON automation_trigger_log(contact_email, automation_id)`,
+		// Email queue tables (V21 migration)
+		`CREATE TABLE IF NOT EXISTS email_queue (
+			id VARCHAR(36) PRIMARY KEY,
+			status VARCHAR(20) NOT NULL DEFAULT 'pending',
+			priority INTEGER NOT NULL DEFAULT 5,
+			source_type VARCHAR(20) NOT NULL,
+			source_id VARCHAR(36) NOT NULL,
+			integration_id VARCHAR(36) NOT NULL,
+			provider_kind VARCHAR(20) NOT NULL,
+			contact_email VARCHAR(255) NOT NULL,
+			message_id VARCHAR(100) NOT NULL,
+			template_id VARCHAR(36) NOT NULL,
+			payload JSONB NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			max_attempts INTEGER NOT NULL DEFAULT 3,
+			last_error TEXT,
+			next_retry_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			processed_at TIMESTAMPTZ
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_pending ON email_queue(priority ASC, created_at ASC) WHERE status = 'pending'`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_next_retry ON email_queue(next_retry_at) WHERE status = 'pending' AND next_retry_at IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_retry ON email_queue(next_retry_at) WHERE status = 'failed' AND attempts < max_attempts`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_source ON email_queue(source_type, source_id, status)`,
+		`CREATE INDEX IF NOT EXISTS idx_email_queue_integration ON email_queue(integration_id, status)`,
 	}
 
 	// Run all table creation queries
@@ -440,32 +528,74 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 			END IF;
 		IF TG_OP = 'INSERT' THEN
 			INSERT INTO contact_timeline (email, operation, entity_type, kind, changes, created_at)
-			VALUES (NEW.email, op, 'contact', op || '_contact', changes_json, NEW.created_at);
+			VALUES (NEW.email, op, 'contact', 'contact.created', changes_json, NEW.created_at);
 		ELSE
 			INSERT INTO contact_timeline (email, operation, entity_type, kind, changes, created_at)
-			VALUES (NEW.email, op, 'contact', op || '_contact', changes_json, CURRENT_TIMESTAMP);
+			VALUES (NEW.email, op, 'contact', 'contact.updated', changes_json, NEW.updated_at);
 		END IF;
 			RETURN NEW;
 		END;
 		$$ LANGUAGE plpgsql;`,
-		// Contact list changes trigger function
+		// Contact list changes trigger function - uses semantic event kinds (list.subscribed, list.confirmed, etc.)
 		`CREATE OR REPLACE FUNCTION track_contact_list_changes()
 		RETURNS TRIGGER AS $$
 		DECLARE
 			changes_json JSONB := '{}'::jsonb;
 			op VARCHAR(20);
+			kind_value VARCHAR(50);
 		BEGIN
 			IF TG_OP = 'INSERT' THEN
 				op := 'insert';
-				changes_json := jsonb_build_object('list_id', jsonb_build_object('new', NEW.list_id), 'status', jsonb_build_object('new', NEW.status));
+
+				-- Map initial status to semantic event kind (dotted format)
+				kind_value := CASE NEW.status
+					WHEN 'active' THEN 'list.subscribed'
+					WHEN 'pending' THEN 'list.pending'
+					WHEN 'unsubscribed' THEN 'list.unsubscribed'
+					WHEN 'bounced' THEN 'list.bounced'
+					WHEN 'complained' THEN 'list.complained'
+					ELSE 'list.subscribed'
+				END;
+
+				changes_json := jsonb_build_object(
+					'list_id', jsonb_build_object('new', NEW.list_id),
+					'status', jsonb_build_object('new', NEW.status)
+				);
+
 			ELSIF TG_OP = 'UPDATE' THEN
 				op := 'update';
-				IF OLD.status IS DISTINCT FROM NEW.status THEN changes_json := changes_json || jsonb_build_object('status', jsonb_build_object('old', OLD.status, 'new', NEW.status)); END IF;
-				IF OLD.deleted_at IS DISTINCT FROM NEW.deleted_at THEN changes_json := changes_json || jsonb_build_object('deleted_at', jsonb_build_object('old', OLD.deleted_at, 'new', NEW.deleted_at)); END IF;
-				IF changes_json = '{}'::jsonb THEN RETURN NEW; END IF;
+
+				-- Handle soft delete
+				IF OLD.deleted_at IS DISTINCT FROM NEW.deleted_at AND NEW.deleted_at IS NOT NULL THEN
+					kind_value := 'list.removed';
+					changes_json := jsonb_build_object(
+						'deleted_at', jsonb_build_object('old', OLD.deleted_at, 'new', NEW.deleted_at)
+					);
+
+				-- Handle status transitions
+				ELSIF OLD.status IS DISTINCT FROM NEW.status THEN
+					kind_value := CASE
+						WHEN OLD.status = 'pending' AND NEW.status = 'active' THEN 'list.confirmed'
+						WHEN OLD.status IN ('unsubscribed', 'bounced', 'complained') AND NEW.status = 'active' THEN 'list.resubscribed'
+						WHEN NEW.status = 'unsubscribed' THEN 'list.unsubscribed'
+						WHEN NEW.status = 'bounced' THEN 'list.bounced'
+						WHEN NEW.status = 'complained' THEN 'list.complained'
+						WHEN NEW.status = 'pending' THEN 'list.pending'
+						WHEN NEW.status = 'active' THEN 'list.subscribed'
+						ELSE 'list.status_changed'
+					END;
+
+					changes_json := jsonb_build_object(
+						'status', jsonb_build_object('old', OLD.status, 'new', NEW.status)
+					);
+				ELSE
+					RETURN NEW;
+				END IF;
 			END IF;
-			INSERT INTO contact_timeline (email, operation, entity_type, kind, entity_id, changes, created_at) 
-			VALUES (NEW.email, op, 'contact_list', op || '_contact_list', NEW.list_id, changes_json, CURRENT_TIMESTAMP);
+
+			INSERT INTO contact_timeline (email, operation, entity_type, kind, entity_id, changes, created_at)
+			VALUES (NEW.email, op, 'contact_list', kind_value, NEW.list_id, changes_json, CURRENT_TIMESTAMP);
+
 			RETURN NEW;
 		END;
 		$$ LANGUAGE plpgsql;`,
@@ -553,11 +683,11 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 		BEGIN
 			IF TG_OP = 'INSERT' THEN
 				op := 'insert';
-				kind_value := 'join_segment';
+				kind_value := 'segment.joined';
 				changes_json := jsonb_build_object('segment_id', jsonb_build_object('new', NEW.segment_id), 'version', jsonb_build_object('new', NEW.version), 'matched_at', jsonb_build_object('new', NEW.matched_at));
 			ELSIF TG_OP = 'DELETE' THEN
 				op := 'delete';
-				kind_value := 'leave_segment';
+				kind_value := 'segment.left';
 				changes_json := jsonb_build_object('segment_id', jsonb_build_object('old', OLD.segment_id), 'version', jsonb_build_object('old', OLD.version));
 				INSERT INTO contact_timeline (email, operation, entity_type, kind, entity_id, changes, created_at) 
 				VALUES (OLD.email, op, 'contact_segment', kind_value, OLD.segment_id, changes_json, CURRENT_TIMESTAMP);
@@ -619,9 +749,11 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 			changes_json JSONB;
 			property_key TEXT;
 			property_diff JSONB;
+			kind_value TEXT;
 		BEGIN
 			IF TG_OP = 'INSERT' THEN
 				timeline_operation := 'insert';
+				kind_value := 'custom_event.' || NEW.event_name;
 				changes_json := jsonb_build_object(
 					'event_name', jsonb_build_object('new', NEW.event_name),
 					'external_id', jsonb_build_object('new', NEW.external_id)
@@ -638,6 +770,7 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 				END IF;
 			ELSIF TG_OP = 'UPDATE' THEN
 				timeline_operation := 'update';
+				kind_value := 'custom_event.' || NEW.event_name;
 				property_diff := '{}'::jsonb;
 				FOR property_key IN
 					SELECT DISTINCT key
@@ -678,7 +811,7 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 			INSERT INTO contact_timeline (
 				email, operation, entity_type, kind, entity_id, changes, created_at
 			) VALUES (
-				NEW.email, timeline_operation, 'custom_event', NEW.event_name,
+				NEW.email, timeline_operation, 'custom_event', kind_value,
 				NEW.external_id, changes_json, NEW.occurred_at
 			);
 			RETURN NEW;
@@ -1042,6 +1175,93 @@ func InitializeWorkspaceDatabase(db *sql.DB) error {
 		$$ LANGUAGE plpgsql`,
 		`DROP TRIGGER IF EXISTS webhook_custom_events ON custom_events`,
 		`CREATE TRIGGER webhook_custom_events AFTER INSERT OR UPDATE ON custom_events FOR EACH ROW EXECUTE FUNCTION webhook_custom_events_trigger()`,
+		// Automation enroll contact function
+		`CREATE OR REPLACE FUNCTION automation_enroll_contact(
+			p_automation_id VARCHAR(36),
+			p_contact_email VARCHAR(255),
+			p_root_node_id VARCHAR(36),
+			p_frequency VARCHAR(20)
+		) RETURNS VOID AS $$
+		DECLARE
+			v_already_triggered BOOLEAN;
+			v_new_id VARCHAR(36);
+		BEGIN
+			-- 1. For "once" frequency, check if already triggered
+			IF p_frequency = 'once' THEN
+				SELECT EXISTS(
+					SELECT 1 FROM automation_trigger_log
+					WHERE automation_id = p_automation_id
+					AND contact_email = p_contact_email
+				) INTO v_already_triggered;
+
+				IF v_already_triggered THEN
+					RETURN;  -- Already triggered for this contact, skip
+				END IF;
+
+				-- Record trigger for deduplication
+				INSERT INTO automation_trigger_log (id, automation_id, contact_email, triggered_at)
+				VALUES (gen_random_uuid()::text, p_automation_id, p_contact_email, NOW())
+				ON CONFLICT (automation_id, contact_email) DO NOTHING;
+			END IF;
+
+			-- 2. Generate new ID for contact_automation
+			v_new_id := gen_random_uuid()::text;
+
+			-- 3. Enroll contact in automation
+			INSERT INTO contact_automations (
+				id, automation_id, contact_email, current_node_id,
+				status, entered_at, scheduled_at
+			) VALUES (
+				v_new_id,
+				p_automation_id,
+				p_contact_email,
+				p_root_node_id,
+				'active',
+				NOW(),
+				NOW()
+			);
+
+			-- 4. Increment enrolled stat
+			UPDATE automations
+			SET stats = jsonb_set(
+				COALESCE(stats, '{}'::jsonb),
+				'{enrolled}',
+				to_jsonb(COALESCE((stats->>'enrolled')::int, 0) + 1)
+			),
+			updated_at = NOW()
+			WHERE id = p_automation_id;
+
+			-- 5. Log node execution entry
+			INSERT INTO automation_node_executions (
+				id, contact_automation_id, automation_id, node_id, node_type, action, entered_at, output
+			) VALUES (
+				gen_random_uuid()::text,
+				v_new_id,
+				p_automation_id,
+				p_root_node_id,
+				'trigger',
+				'entered',
+				NOW(),
+				'{}'::jsonb
+			);
+
+			-- 6. Create automation.start timeline event
+			INSERT INTO contact_timeline (email, operation, entity_type, kind, entity_id, changes, created_at)
+			VALUES (
+				p_contact_email,
+				'insert',
+				'automation',
+				'automation.start',
+				p_automation_id,
+				jsonb_build_object(
+					'automation_id', jsonb_build_object('new', p_automation_id),
+					'root_node_id', jsonb_build_object('new', p_root_node_id)
+				),
+				NOW()
+			);
+
+		END;
+		$$ LANGUAGE plpgsql`,
 	}
 
 	for _, query := range triggerQueries {

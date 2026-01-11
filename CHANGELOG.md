@@ -2,6 +2,221 @@
 
 All notable changes to this project will be documented in this file.
 
+## [24.0] - 2026-01-10
+
+### Bug Fixes
+
+- **Automation Enrollment Failure**: Fixed "cannot set path in scalar" error when enrolling contacts in automations where the `stats` field contained a JSONB scalar value instead of an object
+  - Migration v24 fixes existing automations by setting `stats = '{}'` where `jsonb_typeof(stats) != 'object'`
+
+## [23.0] - 2026-01-09
+
+### Bug Fixes
+
+- **Automation Triggers Not Firing**: Fixed critical bug where automations with "List / Subscribed" trigger never fired for workspaces created after v18 (#190)
+  - Root cause: `init.go` had outdated trigger functions producing generic event kinds (`insert_contact_list`) instead of semantic event kinds (`list.subscribed`)
+  - New workspaces only got `InitializeWorkspaceDatabase()` without running migrations, so they never received the v18 trigger updates
+  - V23 migration reinstalls correct trigger functions on ALL existing workspaces
+  - Updated `init.go` to use semantic event kinds for new workspaces
+  - Fixed e2e test that was masking the bug by manually inserting timeline events
+
+### Database Schema Changes
+
+- Migration v23.0 reinstalls three PostgreSQL trigger functions with semantic event naming:
+  - `track_contact_list_changes()`: `insert_contact_list` → `list.subscribed`, `list.confirmed`, etc.
+  - `track_contact_segment_changes()`: `join_segment` → `segment.joined`, `leave_segment` → `segment.left`
+  - `track_contact_changes()`: `insert_contact` → `contact.created`, `update_contact` → `contact.updated`
+
+## [22.6] - 2026-01-06
+
+### Bug Fixes
+
+- **SMTP Multi-line Banner**: Fixed SMTP connections failing with "EHLO rejected with code: 220" error when server sends multi-line 220 greeting banner (RFC 5321 compliant fix for #183)
+
+## [22.5] - 2026-01-06
+
+### Bug Fixes
+
+- **Segment Date Filters**: Fixed date picker sending dates in wrong format (`YYYY-MM-DD HH:mm:ss` instead of ISO8601). Frontend now sends proper RFC3339 format for all segment date filters including contact fields, timeline timeframes, and custom events goal timeframes (fixes #182)
+
+## [22.4] - 2026-01-06
+
+### Bug Fixes
+
+- **Broadcast Emails**: Fixed regression from v21.0 email queue system where system template variables (`{{ unsubscribe_url }}`, `{{ notification_center_url }}`, `{{ broadcast.name }}`, etc.) were not rendering in broadcast emails (fixes #180)
+- **Message History**: Fixed regression where template data was empty in message history for queue-based sends
+
+## [22.3] - 2026-01-06
+
+### Bug Fixes
+
+- **Automation Flow Editor**: Fixed stale closure bug causing nodes to disappear when adding children to ListStatusBranch handles (fixes #179)
+
+## [22.2] - 2025-12-31
+
+### Features
+
+- **Programmatic Root Authentication**: New `/api/user.rootSignin` endpoint for CI/CD and automation
+  - HMAC-SHA256 signature authentication using existing `SECRET_KEY`
+  - 60-second timestamp window to prevent replay attacks
+  - Rate limited (5 attempts per 5 minutes)
+
+## [22.1] - 2025-12-29
+
+### Features
+
+- **Email AI Assistant**: AI-powered design assistant for email templates
+  - Streaming chat with Anthropic Claude models
+  - Tool use for modifying email structure, blocks, and content
+  - Server-side web scraping and search for content inspiration
+  - Auto-expand tree to selected block for better navigation
+
+### Improvements
+
+- **AI Assistant UX**: Both Email and Blog AI assistants now show a helpful setup prompt when the Anthropic integration is not configured, guiding users to the integration settings
+- **Unified AI Assistant codebase**: Refactored Email and Blog AI assistants to share common code, reducing duplication by ~60% and ensuring consistent behavior
+- **Consistent AI Assistant styling**: Both assistants now use the same color scheme for a unified experience
+
+## [22.0] - 2025-12-28
+
+### Features
+
+- **Blog AI Assistant**: AI-powered writing assistant for blog posts
+  - Streaming chat with Anthropic Claude models (Opus, Sonnet, Haiku)
+  - Tool use for updating blog content and metadata directly in editor
+  - Server-side web scraping and search via Firecrawl integration
+  - Session cost tracking with input/output token breakdown
+
+- **LLM Integration**: Anthropic API support with encrypted API key storage
+- **Firecrawl Integration**: Web scraping (`scrape_url`) and search (`search_web`) tools
+
+## [21.0] - 2025-12-23
+
+### Database Schema Changes
+
+- Migration v21.0 introduces the email queue system:
+  - `email_queue` table for unified broadcast and automation email delivery
+  - Added `enqueued_count` column to `broadcasts` table
+  - Migrated broadcast statuses: `sending` → `processing`, `sent` → `processed`
+
+### Features
+
+- **Email Queue System**: Centralized queue for all outbound marketing emails
+
+  - Unified delivery for broadcasts and automations
+  - Priority-based processing with retry logic
+  - Per-integration rate limiting
+  - Background worker with graceful shutdown
+
+- **Automation Performance**: Single-tick execution optimization
+
+  - Process multiple nodes per scheduler tick until delay or completion
+  - 10-node safety limit per tick prevents runaway loops
+  - State persisted after each node for crash recovery
+
+- **Automation Timeline Events**: Track contact journey lifecycle
+  - `automation.start` event on enrollment
+  - `automation.end` event on completion/exit/failure
+
+### Breaking Changes
+
+- Broadcast statuses renamed: `sending` → `processing`, `sent` → `processed`
+
+## [20.0] - 2025-12-21
+
+### Database Schema Changes
+
+- Migration v20.0 introduces the automations system with 4 new workspace tables:
+  - `automations` - Workflow definitions with trigger config, nodes, and statistics
+  - `contact_automations` - Tracks each contact's journey through automations
+  - `automation_node_executions` - Audit log of node executions for debugging
+  - `automation_trigger_log` - Trigger event logging
+
+### Features
+
+- **Marketing Automations**: Visual workflow builder for automated contact journeys
+
+  - Event-driven triggers from contact timeline (contact, list, segment, email, custom events)
+  - Trigger frequency control: `once` (first occurrence) or `every_time`
+  - Conditional triggers using segment filter conditions
+  - Field-specific triggers for contact updates (e.g., trigger only when `custom_string_1` changes)
+
+- **Automation Node Types**:
+
+  - **Trigger**: Entry point based on timeline events with configurable conditions
+  - **Delay**: Pause workflow for minutes, hours, or days
+  - **Email**: Send templated emails using workspace email provider with tracking
+  - **Branch**: Conditional branching with multiple paths based on segment conditions
+  - **Filter**: Pass/fail routing based on contact attributes
+  - **Add to List**: Subscribe contacts to additional lists
+  - **Remove from List**: Unsubscribe contacts from lists
+  - **A/B Test**: Deterministic variant selection using FNV-32a hashing for consistent splits
+  - **Webhook**: POST contact data to external URLs with authorization headers
+
+- **Visual Flow Editor**: Drag-and-drop canvas for designing automation workflows
+
+  - Node positioning with visual connections
+  - Type-specific configuration panels
+  - Real-time validation
+
+- **Automation Lifecycle Management**:
+
+  - Draft mode for building and testing
+  - Activate to go live (creates PostgreSQL triggers)
+  - Pause to stop new enrollments while preserving in-progress journeys
+  - Soft-delete with recovery capability
+
+- **Contact Journey Tracking**:
+
+  - Full audit trail of node executions with timestamps and duration
+  - Contact status tracking (active, completed, exited, failed)
+  - Exit reasons for debugging
+  - Node execution output logging
+
+- **Execution Engine**:
+
+  - Background scheduler polling every 10 seconds
+  - Batch processing (50 contacts per batch)
+  - Round-robin workload distribution across workspaces
+  - Retry logic with exponential backoff (max 5 retries)
+  - Graceful shutdown handling
+
+- **Statistics Dashboard**:
+
+  - Enrolled contacts count
+  - Completed journeys
+  - Exited contacts (with reasons)
+  - Failed executions
+
+- **API Endpoints** (`/api/automations.*`):
+  - `create`, `get`, `list`, `update`, `delete`
+  - `activate`, `pause` for lifecycle management
+  - `nodeExecutions` for contact journey audit trail
+
+## [19.6] - 2025-12-19
+
+- Fix: SMTP integration now works with strict SMTP servers (#172)
+  - Replaced go-mail SMTP client with raw SMTP command implementation
+  - MAIL FROM command no longer includes BODY=8BITMIME or SMTPUTF8 extensions that caused "501 5.5.4 Syntax error in parameters" errors
+  - Message composition (MIME, headers, attachments) still handled by go-mail
+
+## [19.5] - 2025-12-16
+
+- Fix: Task completion now saves final state to prevent stale progress display in UI (#157)
+- Fix: Prevent concurrent task execution race condition that could cause duplicate broadcast emails
+- Fix: Unsubscribes via notification center link are now tracked in broadcast statistics (#165)
+- Fix: Email builder now respects column width attributes in section blocks
+- Fix: Contact bulk import now handles duplicate emails in a single batch (#167)
+- Fix: Image alt text now supports Liquid template variables (#168)
+
+## [19.4] - 2025-12-12
+
+- Fix: Broadcast recipient count mismatch - `CountContactsForBroadcast` now filters soft-deleted lists consistently with `GetContactsForBroadcast`
+- Fix: Contact list pagination now uses nanosecond precision timestamps to prevent skipping contacts created within the same second (#159)
+- Fix: Broadcast delivery now uses deterministic ordering (`created_at ASC, email ASC`) to prevent skipping contacts with identical timestamps during bulk imports (#157)
+- Enhancement: SES configuration set is now optional for transactional emails
+- Fix: `mailto:` links are no longer tracked (prevents broken email client links)
+
 ## [19.3] - 2025-12-09
 
 - Fix SES non-ASCII characters in email local part (e.g., `Añejandramendo@gmail.com`) now encoded with RFC 2047

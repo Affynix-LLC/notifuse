@@ -106,7 +106,8 @@ type MessageHistory struct {
 	ExternalID      *string              `json:"external_id,omitempty"` // For idempotency checks
 	ContactEmail    string               `json:"contact_email"`
 	BroadcastID     *string              `json:"broadcast_id,omitempty"`
-	ListID          *string              `json:"list_id,omitempty"` // List this message was sent to (nullable for transactional emails)
+	AutomationID    *string              `json:"automation_id,omitempty"` // Automation this message was sent from (nullable for broadcasts/transactional)
+	ListID          *string              `json:"list_id,omitempty"`       // List this message was sent to (nullable for transactional emails)
 	TemplateID      string               `json:"template_id"`
 	TemplateVersion int64                `json:"template_version"`
 	Channel         string               `json:"channel"` // email, sms, push, etc.
@@ -145,6 +146,10 @@ type MessageHistoryStatusSum struct {
 type MessageHistoryRepository interface {
 	// Create adds a new message history record
 	Create(ctx context.Context, workspaceID string, secretKey string, message *MessageHistory) error
+
+	// Upsert creates or updates a message history record (for retry handling)
+	// On conflict, updates failed_at, status_info, and updated_at fields
+	Upsert(ctx context.Context, workspaceID string, secretKey string, message *MessageHistory) error
 
 	// Update updates an existing message history record
 	Update(ctx context.Context, workspaceID string, message *MessageHistory) error

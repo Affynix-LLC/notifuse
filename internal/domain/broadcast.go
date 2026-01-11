@@ -21,14 +21,14 @@ type BroadcastStatus string
 const (
 	BroadcastStatusDraft          BroadcastStatus = "draft"
 	BroadcastStatusScheduled      BroadcastStatus = "scheduled"
-	BroadcastStatusSending        BroadcastStatus = "sending"
+	BroadcastStatusProcessing     BroadcastStatus = "processing"      // Orchestrator is enqueueing emails
 	BroadcastStatusPaused         BroadcastStatus = "paused"
-	BroadcastStatusSent           BroadcastStatus = "sent"
+	BroadcastStatusProcessed      BroadcastStatus = "processed"       // Enqueueing complete
 	BroadcastStatusCancelled      BroadcastStatus = "cancelled"
 	BroadcastStatusFailed         BroadcastStatus = "failed"
 	BroadcastStatusTesting        BroadcastStatus = "testing"         // A/B test in progress
 	BroadcastStatusTestCompleted  BroadcastStatus = "test_completed"  // Test done, awaiting winner selection
-	BroadcastStatusWinnerSelected BroadcastStatus = "winner_selected" // Winner chosen, sending to remaining
+	BroadcastStatusWinnerSelected BroadcastStatus = "winner_selected" // Winner chosen, enqueueing to remaining
 )
 
 // TestWinnerMetric defines the metric used to determine the winning A/B test variation
@@ -256,6 +256,7 @@ type Broadcast struct {
 	WinnerSentAt              *time.Time            `json:"winner_sent_at,omitempty"`
 	TestPhaseRecipientCount   int                   `json:"test_phase_recipient_count"`
 	WinnerPhaseRecipientCount int                   `json:"winner_phase_recipient_count"`
+	EnqueuedCount             int                   `json:"enqueued_count"` // Emails added to queue
 	CreatedAt                 time.Time             `json:"created_at"`
 	UpdatedAt                 time.Time             `json:"updated_at"`
 	StartedAt                 *time.Time            `json:"started_at,omitempty"`
@@ -310,8 +311,8 @@ func (b *Broadcast) Validate() error {
 
 	// Validate status
 	switch b.Status {
-	case BroadcastStatusDraft, BroadcastStatusScheduled, BroadcastStatusSending,
-		BroadcastStatusPaused, BroadcastStatusSent, BroadcastStatusCancelled,
+	case BroadcastStatusDraft, BroadcastStatusScheduled, BroadcastStatusProcessing,
+		BroadcastStatusPaused, BroadcastStatusProcessed, BroadcastStatusCancelled,
 		BroadcastStatusFailed, BroadcastStatusTesting, BroadcastStatusTestCompleted,
 		BroadcastStatusWinnerSelected:
 		// Valid status
@@ -397,12 +398,12 @@ func (b *Broadcast) Validate() error {
 	return nil
 }
 
-// CreateBroadcastRequest defines the request to create a new broadcast
+// CreateBroadcastRequest defines the request to create a new broadcast.
+// Note: Scheduling must be done via the ScheduleBroadcastRequest after creation.
 type CreateBroadcastRequest struct {
 	WorkspaceID     string                `json:"workspace_id"`
 	Name            string                `json:"name"`
 	Audience        AudienceSettings      `json:"audience"`
-	Schedule        ScheduleSettings      `json:"schedule"`
 	TestSettings    BroadcastTestSettings `json:"test_settings"`
 	TrackingEnabled bool                  `json:"tracking_enabled"`
 	UTMParameters   *UTMParameters        `json:"utm_parameters,omitempty"`
@@ -416,17 +417,12 @@ func (r *CreateBroadcastRequest) Validate() (*Broadcast, error) {
 		Name:          r.Name,
 		Status:        BroadcastStatusDraft,
 		Audience:      r.Audience,
-		Schedule:      r.Schedule,
+		Schedule:      ScheduleSettings{}, // Empty schedule - must use broadcasts.schedule endpoint
 		TestSettings:  r.TestSettings,
 		UTMParameters: r.UTMParameters,
 		Metadata:      r.Metadata,
 		CreatedAt:     time.Now().UTC(),
 		UpdatedAt:     time.Now().UTC(),
-	}
-
-	// Set status to scheduled if the broadcast is scheduled
-	if r.Schedule.IsScheduled {
-		broadcast.Status = BroadcastStatusScheduled
 	}
 
 	if err := broadcast.Validate(); err != nil {

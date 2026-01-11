@@ -1253,7 +1253,7 @@
     "/api/broadcasts.create": {
       "post": {
         "summary": "Create a broadcast",
-        "description": "Creates a new broadcast campaign. The broadcast is created in draft status unless scheduling is configured.",
+        "description": "Creates a new broadcast campaign in draft status.\n\n**Important:** Creating a broadcast does not schedule or send it. After creating the broadcast,\nyou must call the `/api/broadcasts.schedule` endpoint to schedule or send it immediately.\n",
         "operationId": "createBroadcast",
         "security": [
           {
@@ -3319,11 +3319,11 @@
           {
             "name": "subscription_id",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string"
             },
-            "description": "The ID of the webhook subscription",
+            "description": "The ID of the webhook subscription (optional - if not provided, returns all deliveries for the workspace)",
             "example": "whsub_a1b2c3d4e5f6"
           },
           {
@@ -3370,17 +3370,8 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 },
-                "examples": {
-                  "missingWorkspaceId": {
-                    "value": {
-                      "error": "workspace_id is required"
-                    }
-                  },
-                  "missingSubscriptionId": {
-                    "value": {
-                      "error": "subscription_id is required"
-                    }
-                  }
+                "example": {
+                  "error": "workspace_id is required"
                 }
               }
             }
@@ -3713,6 +3704,116 @@
           }
         }
       }
+    },
+    "/api/user.rootSignin": {
+      "post": {
+        "summary": "Root user programmatic signin",
+        "security": [],
+        "description": "Authenticates the root user using HMAC signature for programmatic access.\nThis endpoint is designed for automation scenarios like Infrastructure-as-Code\ndeployments, CI/CD pipelines, and automated testing where magic link\nauthentication is impractical.\n\n**Security Features:**\n- HMAC-SHA256 signature verification using the application's secret key\n- 60-second timestamp window to prevent replay attacks\n- Rate limited to 5 attempts per 5 minutes per email\n- Only works for the configured root email address\n\n**How to generate the signature:**\n```bash\nSECRET_KEY=\"your-notifuse-secret-key\"\nROOT_EMAIL=\"admin@example.com\"\nTIMESTAMP=$(date +%s)\nMESSAGE=\"${ROOT_EMAIL}:${TIMESTAMP}\"\nSIGNATURE=$(echo -n \"$MESSAGE\" | openssl dgst -sha256 -hmac \"$SECRET_KEY\" | awk '{print $2}')\n```\n",
+        "operationId": "rootSignin",
+        "tags": [
+          "Authentication"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RootSigninRequest"
+              },
+              "example": {
+                "email": "admin@example.com",
+                "timestamp": 1735600000,
+                "signature": "a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication successful",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RootSigninResponse"
+                },
+                "example": {
+                  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoidXNyXzEyMzQ1Njc4OTAiLCJzZXNzaW9uX2lkIjoic2VzXzEyMzQ1Njc4OTAiLCJleHAiOjE3MzU2ODY0MDB9.signature",
+                  "user": {
+                    "id": "usr_1234567890",
+                    "email": "admin@example.com",
+                    "name": "Admin User",
+                    "created_at": "2025-01-01T00:00:00Z",
+                    "updated_at": "2025-01-01T00:00:00Z"
+                  },
+                  "expires_at": "2025-01-01T12:00:00Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - missing required fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "missingFields": {
+                    "summary": "Missing required fields",
+                    "value": {
+                      "error": "Missing required fields: email, timestamp, signature"
+                    }
+                  },
+                  "invalidBody": {
+                    "summary": "Invalid JSON body",
+                    "value": {
+                      "error": "Invalid request body"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "examples": {
+                  "invalidCredentials": {
+                    "summary": "Invalid email, timestamp, or signature",
+                    "value": {
+                      "error": "Invalid credentials"
+                    }
+                  },
+                  "rateLimited": {
+                    "summary": "Too many failed attempts",
+                    "value": {
+                      "error": "Invalid credentials"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method not allowed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                },
+                "example": {
+                  "error": "Method not allowed"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -3757,7 +3858,8 @@
         "type": "object",
         "required": [
           "id",
-          "contact"
+          "contact",
+          "channels"
         ],
         "properties": {
           "id": {
@@ -3776,7 +3878,8 @@
           },
           "channels": {
             "type": "array",
-            "description": "Specific channels to send through (if empty, use all configured channels)",
+            "description": "Channels to send through (at least one required)",
+            "minItems": 1,
             "items": {
               "type": "string",
               "enum": [
@@ -4964,9 +5067,9 @@
             "enum": [
               "draft",
               "scheduled",
-              "sending",
+              "processing",
               "paused",
-              "sent",
+              "processed",
               "cancelled",
               "failed",
               "testing",
@@ -5010,6 +5113,11 @@
             "format": "date-time",
             "nullable": true,
             "description": "When the winning variation was sent"
+          },
+          "enqueued_count": {
+            "type": "integer",
+            "description": "Number of emails added to the queue by orchestrator",
+            "example": 1000
           },
           "test_phase_recipient_count": {
             "type": "integer",
@@ -5196,11 +5304,12 @@
       },
       "ScheduleSettings": {
         "type": "object",
+        "description": "Schedule settings for a broadcast. Note: When a broadcast is first created,\nthese fields are empty/false. Use the /api/broadcasts.schedule endpoint to\nconfigure scheduling.\n",
         "properties": {
           "is_scheduled": {
             "type": "boolean",
-            "description": "Whether the broadcast is scheduled",
-            "example": true
+            "description": "Whether the broadcast is scheduled (false after creation, set via broadcasts.schedule)",
+            "example": false
           },
           "scheduled_date": {
             "type": "string",
@@ -5275,9 +5384,6 @@
           },
           "audience": {
             "$ref": "#/components/schemas/AudienceSettings"
-          },
-          "schedule": {
-            "$ref": "#/components/schemas/ScheduleSettings"
           },
           "test_settings": {
             "$ref": "#/components/schemas/BroadcastTestSettings"
@@ -5984,16 +6090,27 @@
       "CompileTemplateRequest": {
         "type": "object",
         "required": [
-          "template_content",
-          "template_data"
+          "workspace_id",
+          "message_id",
+          "visual_editor_tree"
         ],
         "properties": {
-          "template_content": {
+          "workspace_id": {
+            "type": "string",
+            "description": "The ID of the workspace",
+            "example": "ws_1234567890"
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Unique message ID for tracking",
+            "example": "msg_abc123"
+          },
+          "visual_editor_tree": {
             "type": "object",
-            "description": "MJML template structure to compile",
+            "description": "MJML visual editor tree structure (must have type 'mjml')",
             "additionalProperties": true
           },
-          "template_data": {
+          "test_data": {
             "type": "object",
             "description": "Data to use for Liquid templating",
             "additionalProperties": true,
@@ -6001,22 +6118,84 @@
               "user_name": "John Doe",
               "action_url": "https://example.com/action"
             }
+          },
+          "tracking_settings": {
+            "$ref": "#/components/schemas/TrackingSettings"
+          },
+          "channel": {
+            "type": "string",
+            "enum": [
+              "email",
+              "web"
+            ],
+            "description": "Channel filter for block visibility"
           }
         }
       },
       "CompileTemplateResponse": {
         "type": "object",
         "properties": {
+          "success": {
+            "type": "boolean",
+            "description": "Whether compilation was successful"
+          },
+          "mjml": {
+            "type": "string",
+            "description": "Generated MJML markup"
+          },
           "html": {
             "type": "string",
             "description": "Compiled HTML output"
           },
-          "errors": {
-            "type": "array",
-            "description": "Compilation errors, if any",
-            "items": {
-              "type": "string"
+          "error": {
+            "type": "object",
+            "description": "MJML compilation error details, if any",
+            "properties": {
+              "message": {
+                "type": "string"
+              }
             }
+          }
+        }
+      },
+      "TrackingSettings": {
+        "type": "object",
+        "properties": {
+          "enable_tracking": {
+            "type": "boolean",
+            "description": "Whether to enable click/open tracking"
+          },
+          "endpoint": {
+            "type": "string",
+            "description": "API endpoint for tracking redirects"
+          },
+          "utm_source": {
+            "type": "string",
+            "description": "UTM source parameter"
+          },
+          "utm_medium": {
+            "type": "string",
+            "description": "UTM medium parameter"
+          },
+          "utm_campaign": {
+            "type": "string",
+            "description": "UTM campaign parameter"
+          },
+          "utm_content": {
+            "type": "string",
+            "description": "UTM content parameter"
+          },
+          "utm_term": {
+            "type": "string",
+            "description": "UTM term parameter"
+          },
+          "workspace_id": {
+            "type": "string",
+            "description": "Workspace ID for tracking"
+          },
+          "message_id": {
+            "type": "string",
+            "description": "Message ID for tracking"
           }
         }
       },
@@ -6781,6 +6960,11 @@
             "type": "string",
             "description": "The ID of the subscription to test",
             "example": "whsub_a1b2c3d4e5f6"
+          },
+          "event_type": {
+            "type": "string",
+            "description": "Optional event type to use for the test webhook payload",
+            "example": "contact.created"
           }
         }
       },
@@ -6829,6 +7013,97 @@
             ]
           }
         }
+      },
+      "RootSigninRequest": {
+        "type": "object",
+        "description": "Request payload for root user programmatic signin using HMAC signature",
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "The root user's email address (must match configured ROOT_EMAIL)",
+            "example": "admin@example.com"
+          },
+          "timestamp": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp (seconds since epoch). Must be within 60 seconds of server time.",
+            "example": 1735600000
+          },
+          "signature": {
+            "type": "string",
+            "description": "HMAC-SHA256 signature computed as: HMAC-SHA256(email + \":\" + timestamp, SECRET_KEY)\nThe signature should be hex-encoded.\n",
+            "example": "a1b2c3d4e5f6..."
+          }
+        },
+        "required": [
+          "email",
+          "timestamp",
+          "signature"
+        ]
+      },
+      "RootSigninResponse": {
+        "type": "object",
+        "description": "Successful authentication response containing JWT token and user details",
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "JWT authentication token for subsequent API requests",
+            "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Token expiration timestamp",
+            "example": "2025-01-01T12:00:00Z"
+          }
+        },
+        "required": [
+          "token",
+          "user",
+          "expires_at"
+        ]
+      },
+      "User": {
+        "type": "object",
+        "description": "User account information",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique user identifier",
+            "example": "usr_1234567890"
+          },
+          "email": {
+            "type": "string",
+            "format": "email",
+            "description": "User's email address",
+            "example": "admin@example.com"
+          },
+          "name": {
+            "type": "string",
+            "description": "User's display name",
+            "example": "Admin User"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Account creation timestamp",
+            "example": "2025-01-01T00:00:00Z"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Last update timestamp",
+            "example": "2025-01-01T00:00:00Z"
+          }
+        },
+        "required": [
+          "id",
+          "email"
+        ]
       }
     }
   }

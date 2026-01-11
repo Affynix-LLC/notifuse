@@ -68,27 +68,28 @@ func (r *broadcastRepository) CreateBroadcastTx(ctx context.Context, tx *sql.Tx,
 	// Insert the broadcast
 	query := `
 		INSERT INTO broadcasts (
-			id, 
+			id,
 			workspace_id,
-			name, 
-			status, 
-			audience, 
-			schedule, 
-			test_settings, 
-			utm_parameters, 
-			metadata, 
-			winning_template, 
-			test_sent_at, 
-			winner_sent_at, 
-			created_at, 
-			updated_at, 
-			started_at, 
-			completed_at, 
+			name,
+			status,
+			audience,
+			schedule,
+			test_settings,
+			utm_parameters,
+			metadata,
+			winning_template,
+			test_sent_at,
+			winner_sent_at,
+			enqueued_count,
+			created_at,
+			updated_at,
+			started_at,
+			completed_at,
 			cancelled_at,
 			paused_at,
 			pause_reason
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20
 		)
 	`
 
@@ -105,6 +106,7 @@ func (r *broadcastRepository) CreateBroadcastTx(ctx context.Context, tx *sql.Tx,
 		broadcast.WinningTemplate,
 		broadcast.TestSentAt,
 		broadcast.WinnerSentAt,
+		broadcast.EnqueuedCount,
 		broadcast.CreatedAt,
 		broadcast.UpdatedAt,
 		broadcast.StartedAt,
@@ -130,23 +132,24 @@ func (r *broadcastRepository) GetBroadcast(ctx context.Context, workspaceID, id 
 	}
 
 	query := `
-		SELECT 
-			id, 
+		SELECT
+			id,
 			workspace_id,
-			name, 
-			status, 
-			audience, 
-			schedule, 
-			test_settings, 
-			utm_parameters, 
-			metadata, 
-			winning_template, 
-			test_sent_at, 
-			winner_sent_at, 
-			created_at, 
-			updated_at, 
-			started_at, 
-			completed_at, 
+			name,
+			status,
+			audience,
+			schedule,
+			test_settings,
+			utm_parameters,
+			metadata,
+			winning_template,
+			test_sent_at,
+			winner_sent_at,
+			enqueued_count,
+			created_at,
+			updated_at,
+			started_at,
+			completed_at,
 			cancelled_at,
 			paused_at,
 			pause_reason
@@ -170,23 +173,24 @@ func (r *broadcastRepository) GetBroadcast(ctx context.Context, workspaceID, id 
 // GetBroadcastTx retrieves a broadcast by ID within a transaction
 func (r *broadcastRepository) GetBroadcastTx(ctx context.Context, tx *sql.Tx, workspaceID, id string) (*domain.Broadcast, error) {
 	query := `
-		SELECT 
-			id, 
+		SELECT
+			id,
 			workspace_id,
-			name, 
-			status, 
-			audience, 
-			schedule, 
-			test_settings, 
-			utm_parameters, 
-			metadata, 
-			winning_template, 
-			test_sent_at, 
-			winner_sent_at, 
-			created_at, 
-			updated_at, 
-			started_at, 
-			completed_at, 
+			name,
+			status,
+			audience,
+			schedule,
+			test_settings,
+			utm_parameters,
+			metadata,
+			winning_template,
+			test_sent_at,
+			winner_sent_at,
+			enqueued_count,
+			created_at,
+			updated_at,
+			started_at,
+			completed_at,
 			cancelled_at,
 			paused_at,
 			pause_reason
@@ -220,7 +224,7 @@ func (r *broadcastRepository) UpdateBroadcastTx(ctx context.Context, tx *sql.Tx,
 	broadcast.UpdatedAt = time.Now().UTC()
 
 	query := `
-		UPDATE broadcasts 		SET
+		UPDATE broadcasts SET
 			name = $3,
 			status = $4,
 			audience = $5,
@@ -236,10 +240,11 @@ func (r *broadcastRepository) UpdateBroadcastTx(ctx context.Context, tx *sql.Tx,
 			completed_at = $15,
 			cancelled_at = $16,
 			paused_at = $17,
-			pause_reason = $18
+			pause_reason = $18,
+			enqueued_count = $19
 		WHERE id = $1 AND workspace_id = $2
 			AND status != 'cancelled'
-			AND status != 'sent'
+			AND status != 'processed'
 	`
 
 	result, err := tx.ExecContext(ctx, query,
@@ -261,6 +266,7 @@ func (r *broadcastRepository) UpdateBroadcastTx(ctx context.Context, tx *sql.Tx,
 		broadcast.CancelledAt,
 		broadcast.PausedAt,
 		broadcast.PauseReason,
+		broadcast.EnqueuedCount,
 	)
 
 	if err != nil {
@@ -313,58 +319,60 @@ func (r *broadcastRepository) ListBroadcastsTx(ctx context.Context, tx *sql.Tx, 
 
 	if params.Status != "" {
 		dataQuery = `
-			SELECT 
-				id, 
+			SELECT
+				id,
 				workspace_id,
-				name, 
-				status, 
-				audience, 
-				schedule, 
-				test_settings, 
-				utm_parameters, 
-				metadata, 
-				winning_template, 
-				test_sent_at, 
-				winner_sent_at, 
-				created_at, 
-				updated_at, 
-				started_at, 
-				completed_at, 
-			cancelled_at,
-			paused_at,
-			pause_reason
-		FROM broadcasts
-		WHERE workspace_id = $1 AND status = $2
-		ORDER BY created_at DESC
-		LIMIT $3 OFFSET $4
+				name,
+				status,
+				audience,
+				schedule,
+				test_settings,
+				utm_parameters,
+				metadata,
+				winning_template,
+				test_sent_at,
+				winner_sent_at,
+				enqueued_count,
+				created_at,
+				updated_at,
+				started_at,
+				completed_at,
+				cancelled_at,
+				paused_at,
+				pause_reason
+			FROM broadcasts
+			WHERE workspace_id = $1 AND status = $2
+			ORDER BY created_at DESC
+			LIMIT $3 OFFSET $4
 		`
 		dataArgs = []interface{}{params.WorkspaceID, params.Status, params.Limit, params.Offset}
 	} else {
 		dataQuery = `
-			SELECT 
-				id, 
+			SELECT
+				id,
 				workspace_id,
-				name, 
-				status, 
-				audience, 
-				schedule, 
-				test_settings, 
-				utm_parameters, 
-				metadata, 
-				winning_template, 
-				test_sent_at, 
-				winner_sent_at, 
-				created_at, 
-				updated_at, 
-				started_at, 
-				completed_at, 
-			cancelled_at,
-			paused_at,
-			pause_reason
-		FROM broadcasts
-		WHERE workspace_id = $1
-		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3
+				name,
+				status,
+				audience,
+				schedule,
+				test_settings,
+				utm_parameters,
+				metadata,
+				winning_template,
+				test_sent_at,
+				winner_sent_at,
+				enqueued_count,
+				created_at,
+				updated_at,
+				started_at,
+				completed_at,
+				cancelled_at,
+				paused_at,
+				pause_reason
+			FROM broadcasts
+			WHERE workspace_id = $1
+			ORDER BY created_at DESC
+			LIMIT $2 OFFSET $3
 		`
 		dataArgs = []interface{}{params.WorkspaceID, params.Limit, params.Offset}
 	}
@@ -475,6 +483,7 @@ func scanBroadcast(scanner interface {
 		&winningTemplate,
 		&broadcast.TestSentAt,
 		&broadcast.WinnerSentAt,
+		&broadcast.EnqueuedCount,
 		&broadcast.CreatedAt,
 		&broadcast.UpdatedAt,
 		&broadcast.StartedAt,

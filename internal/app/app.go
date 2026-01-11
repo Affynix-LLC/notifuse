@@ -20,6 +20,7 @@ import (
 	"github.com/Notifuse/notifuse/internal/repository"
 	"github.com/Notifuse/notifuse/internal/service"
 	"github.com/Notifuse/notifuse/internal/service/broadcast"
+	"github.com/Notifuse/notifuse/internal/service/queue"
 	"github.com/Notifuse/notifuse/pkg/cache"
 	pkgDatabase "github.com/Notifuse/notifuse/pkg/database"
 	"github.com/Notifuse/notifuse/pkg/logger"
@@ -55,10 +56,12 @@ type AppInterface interface {
 	GetContactListRepository() domain.ContactListRepository
 	GetTransactionalNotificationRepository() domain.TransactionalNotificationRepository
 	GetTelemetryRepository() domain.TelemetryRepository
+	GetEmailQueueRepository() domain.EmailQueueRepository
 
 	// Service getters for testing
 	GetAuthService() interface{} // Returns *service.AuthService but defined as interface{} to avoid import cycle
 	GetTransactionalNotificationService() domain.TransactionalNotificationService
+	GetEmailQueueWorker() *queue.EmailQueueWorker
 
 	// Server status methods
 	IsServerCreated() bool
@@ -112,6 +115,8 @@ type App struct {
 	customEventRepo               domain.CustomEventRepository
 	webhookSubscriptionRepo       domain.WebhookSubscriptionRepository
 	webhookDeliveryRepo           domain.WebhookDeliveryRepository
+	automationRepo                domain.AutomationRepository
+	emailQueueRepo                domain.EmailQueueRepository
 
 	// Services
 	authService                      *service.AuthService
@@ -145,6 +150,10 @@ type App struct {
 	customEventService               *service.CustomEventService
 	webhookSubscriptionService       *service.WebhookSubscriptionService
 	webhookDeliveryWorker            *service.WebhookDeliveryWorker
+	automationService                *service.AutomationService
+	automationScheduler              *service.AutomationScheduler
+	llmService                       *service.LLMService
+	emailQueueWorker                 *queue.EmailQueueWorker
 	// providers
 	postmarkService  *service.PostmarkService
 	mailgunService   *service.MailgunService
@@ -414,6 +423,14 @@ func (a *App) InitRepositories() error {
 	a.webhookSubscriptionRepo = repository.NewWebhookSubscriptionRepository(a.workspaceRepo)
 	a.webhookDeliveryRepo = repository.NewWebhookDeliveryRepository(a.workspaceRepo)
 
+	// Create trigger generator for automation repository
+	queryBuilder := service.NewQueryBuilder()
+	triggerGenerator := service.NewAutomationTriggerGenerator(queryBuilder)
+	a.automationRepo = repository.NewAutomationRepository(a.workspaceRepo, triggerGenerator)
+
+	// Initialize email queue repository
+	a.emailQueueRepo = repository.NewEmailQueueRepository(a.workspaceRepo)
+
 	// Initialize setting service
 	a.settingService = service.NewSettingService(a.settingRepo)
 
@@ -464,6 +481,7 @@ func (a *App) InitServices() error {
 		Tracer:        tracing.GetTracer(),
 		RateLimiter:   a.rateLimiter, // Pass global rate limiter
 		SecretKey:     a.config.Security.SecretKey,
+		RootEmail:     a.config.RootEmail,
 	}
 
 	a.userService, err = service.NewUserService(userServiceConfig)
@@ -599,6 +617,7 @@ func (a *App) InitServices() error {
 		a.workspaceRepo,
 		a.contactListRepo,
 		a.contactRepo,
+		a.messageHistoryRepo,
 		a.authService,
 		a.emailService,
 		a.logger,
@@ -686,10 +705,12 @@ func (a *App) InitServices() error {
 		a.contactRepo,
 		a.taskRepo,
 		a.workspaceRepo,
+		a.emailQueueRepo,
 		a.logger,
 		broadcastConfig,
 		a.config.APIEndpoint,
 		a.eventBus,
+		true, // useQueueSender - use queue-based message sender for broadcasts
 	)
 
 	// Register the broadcast factory with the task service
@@ -875,6 +896,58 @@ func (a *App) InitServices() error {
 		httpClient,
 	)
 
+	// Initialize email queue worker for processing marketing emails (broadcasts & automations)
+	// Worker creates message_history entries via UPSERT after each send attempt
+	a.emailQueueWorker = queue.NewEmailQueueWorker(
+		a.emailQueueRepo,
+		a.workspaceRepo,
+		a.emailService,
+		a.messageHistoryRepo,
+		queue.DefaultWorkerConfig(),
+		a.logger,
+	)
+
+	// Initialize automation service
+	a.automationService = service.NewAutomationService(
+		a.automationRepo,
+		a.authService,
+		a.logger,
+	)
+
+	// Initialize Firecrawl service
+	firecrawlService := service.NewFirecrawlService(a.logger)
+
+	// Initialize server-side tool registry
+	toolRegistry := service.NewServerSideToolRegistry(firecrawlService, a.logger)
+
+	// Initialize LLM service with tool registry
+	a.llmService = service.NewLLMService(service.LLMServiceConfig{
+		AuthService:   a.authService,
+		WorkspaceRepo: a.workspaceRepo,
+		Logger:        a.logger,
+		ToolRegistry:  toolRegistry,
+	})
+
+	// Initialize automation executor and scheduler
+	automationExecutor := service.NewAutomationExecutor(
+		a.automationRepo,
+		a.contactRepo,
+		a.workspaceRepo,
+		a.contactListRepo,
+		a.templateRepo,
+		a.emailQueueRepo,
+		a.messageHistoryRepo,
+		a.contactTimelineRepo,
+		a.logger,
+		a.config.APIEndpoint,
+	)
+	a.automationScheduler = service.NewAutomationScheduler(
+		automationExecutor,
+		a.logger,
+		10*time.Second, // Poll every 10 seconds
+		50,             // Process 50 contacts per batch
+	)
+
 	// Initialize SMTP relay handler service
 	a.smtpRelayHandlerService = service.NewSMTPRelayHandlerService(
 		a.authService,
@@ -1044,6 +1117,16 @@ func (a *App) InitHandlers() error {
 		getJWTSecret,
 		a.logger,
 	)
+	automationHandler := httpHandler.NewAutomationHandler(
+		a.automationService,
+		getJWTSecret,
+		a.logger,
+	)
+	llmHandler := httpHandler.NewLLMHandler(
+		a.llmService,
+		getJWTSecret,
+		a.logger,
+	)
 	if !a.config.IsProduction() {
 		demoHandler := httpHandler.NewDemoHandler(a.demoService, a.logger)
 		demoHandler.RegisterRoutes(a.mux)
@@ -1075,6 +1158,8 @@ func (a *App) InitHandlers() error {
 	segmentHandler.RegisterRoutes(a.mux)
 	customEventHandler.RegisterRoutes(a.mux)
 	webhookSubscriptionHandler.RegisterRoutes(a.mux)
+	automationHandler.RegisterRoutes(a.mux)
+	llmHandler.RegisterRoutes(a.mux)
 
 	return nil
 }
@@ -1190,6 +1275,58 @@ func (a *App) Start() error {
 		}()
 	}
 
+	// Start email queue worker (with 30 second delay)
+	// Disabled in demo mode to prevent sending marketing emails
+	if a.emailQueueWorker != nil && !a.config.IsDemo() {
+		go func() {
+			a.logger.Info("Email queue worker will start in 30 seconds...")
+
+			ctx := a.GetShutdownContext()
+
+			// Use a timer that respects the shutdown context
+			select {
+			case <-time.After(30 * time.Second):
+				// Check if we're shutting down before starting
+				if ctx.Err() != nil {
+					a.logger.Info("Server shutting down, email queue worker will not start")
+					return
+				}
+				a.logger.Info("Starting email queue worker now")
+				if err := a.emailQueueWorker.Start(ctx); err != nil {
+					a.logger.WithField("error", err.Error()).Error("Failed to start email queue worker")
+				}
+			case <-ctx.Done():
+				a.logger.Info("Server shutdown initiated during email queue worker delay, worker will not start")
+				return
+			}
+		}()
+	}
+
+	// Start automation scheduler (with 30 second delay)
+	// Disabled in demo mode to prevent executing automations
+	if a.automationScheduler != nil && !a.config.IsDemo() {
+		go func() {
+			a.logger.Info("Automation scheduler will start in 30 seconds...")
+
+			ctx := a.GetShutdownContext()
+
+			// Use a timer that respects the shutdown context
+			select {
+			case <-time.After(30 * time.Second):
+				// Check if we're shutting down before starting
+				if ctx.Err() != nil {
+					a.logger.Info("Server shutting down, automation scheduler will not start")
+					return
+				}
+				a.logger.Info("Starting automation scheduler now")
+				a.automationScheduler.Start(ctx)
+			case <-ctx.Done():
+				a.logger.Info("Server shutdown initiated during automation scheduler delay, scheduler will not start")
+				return
+			}
+		}()
+	}
+
 	// Start the server based on SSL configuration
 	if a.config.Server.SSL.Enabled {
 		a.logger.WithField("cert_file", a.config.Server.SSL.CertFile).Info("SSL enabled")
@@ -1215,6 +1352,18 @@ func (a *App) Shutdown(ctx context.Context) error {
 	// Stop task scheduler first (before stopping server)
 	if a.taskScheduler != nil {
 		a.taskScheduler.Stop()
+	}
+
+	// Stop automation scheduler
+	if a.automationScheduler != nil {
+		a.logger.Info("Stopping automation scheduler...")
+		a.automationScheduler.Stop()
+	}
+
+	// Stop email queue worker
+	if a.emailQueueWorker != nil {
+		a.logger.Info("Stopping email queue worker...")
+		a.emailQueueWorker.Stop()
 	}
 
 	// Stop global rate limiter
@@ -1542,6 +1691,14 @@ func (a *App) GetTransactionalNotificationRepository() domain.TransactionalNotif
 
 func (a *App) GetTelemetryRepository() domain.TelemetryRepository {
 	return a.telemetryRepo
+}
+
+func (a *App) GetEmailQueueRepository() domain.EmailQueueRepository {
+	return a.emailQueueRepo
+}
+
+func (a *App) GetEmailQueueWorker() *queue.EmailQueueWorker {
+	return a.emailQueueWorker
 }
 
 func (a *App) GetAuthService() interface{} {

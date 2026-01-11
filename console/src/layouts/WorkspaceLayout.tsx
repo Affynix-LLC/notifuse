@@ -72,7 +72,8 @@ export function WorkspaceLayout() {
           transactional: { read: true, write: true },
           workspace: { read: true, write: true },
           message_history: { read: true, write: true },
-          blog: { read: true, write: true }
+          blog: { read: true, write: true },
+          automations: { read: true, write: true }
         })
         setLoadingPermissions(false)
         return
@@ -94,7 +95,8 @@ export function WorkspaceLayout() {
             transactional: { read: false, write: false },
             workspace: { read: false, write: false },
             message_history: { read: false, write: false },
-            blog: { read: false, write: false }
+            blog: { read: false, write: false },
+            automations: { read: false, write: false }
           })
         }
       } catch (error) {
@@ -108,7 +110,8 @@ export function WorkspaceLayout() {
           transactional: { read: false, write: false },
           workspace: { read: false, write: false },
           message_history: { read: false, write: false },
-          blog: { read: false, write: false }
+          blog: { read: false, write: false },
+          automations: { read: false, write: false }
         })
       } finally {
         setLoadingPermissions(false)
@@ -146,6 +149,8 @@ export function WorkspaceLayout() {
     selectedKey = 'logs'
   } else if (currentPath.includes('/broadcasts')) {
     selectedKey = 'broadcasts'
+  } else if (currentPath.includes('/automations')) {
+    selectedKey = 'automations'
   }
 
   const handleWorkspaceChange = (workspaceId: string) => {
@@ -274,6 +279,32 @@ export function WorkspaceLayout() {
         </Link>
       )
     },
+    hasAccess('automations') && {
+      key: 'automations',
+      icon: (
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="lucide lucide-workflow-icon lucide-workflow opacity-70"
+        >
+          <rect width="8" height="8" x="3" y="3" rx="2" />
+          <path d="M7 11v4a2 2 0 0 0 2 2h4" />
+          <rect width="8" height="8" x="13" y="13" rx="2" />
+        </svg>
+      ),
+      label: (
+        <Link to="/console/workspace/$workspaceId/automations" params={{ workspaceId }}>
+          Automations
+        </Link>
+      )
+    },
     hasAccess('transactional') && {
       key: 'transactional-notifications',
       icon: <FontAwesomeIcon icon={faTerminal} size="sm" style={{ opacity: 0.7 }} />,
@@ -399,7 +430,13 @@ export function WorkspaceLayout() {
             <Menu
               mode="inline"
               selectedKeys={[selectedKey]}
-              style={{ height: 'calc(100% - 120px)', borderRight: 0, backgroundColor: '#F9F9F9' }}
+              style={{
+                height: 'calc(100% - 120px)',
+                borderRight: 0,
+                backgroundColor: '#F9F9F9',
+                fontSize: '13px',
+                fontWeight: 600
+              }}
               items={loadingPermissions ? [] : menuItems}
               theme="light"
             />

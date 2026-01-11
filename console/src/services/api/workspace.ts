@@ -125,7 +125,28 @@ export interface MailjetSettings {
   sandbox_mode: boolean
 }
 
-export type IntegrationType = 'email' | 'sms' | 'whatsapp' | 'supabase'
+export type IntegrationType = 'email' | 'sms' | 'whatsapp' | 'supabase' | 'llm' | 'firecrawl'
+
+// LLM Provider types
+export type LLMProviderKind = 'anthropic'
+
+export interface AnthropicSettings {
+  api_key?: string
+  encrypted_api_key?: string
+  model: string
+}
+
+export interface LLMProvider {
+  kind: LLMProviderKind
+  anthropic?: AnthropicSettings
+}
+
+// Firecrawl settings for web scraping and search
+export interface FirecrawlSettings {
+  api_key?: string
+  encrypted_api_key?: string
+  base_url?: string
+}
 
 export interface SupabaseAuthEmailHookSettings {
   signature_key?: string
@@ -151,6 +172,8 @@ export interface Integration {
   type: IntegrationType
   email_provider?: EmailProvider
   supabase_settings?: SupabaseIntegrationSettings
+  llm_provider?: LLMProvider
+  firecrawl_settings?: FirecrawlSettings
   created_at: string
   updated_at: string
 }
@@ -227,6 +250,8 @@ export interface CreateIntegrationRequest {
   type: IntegrationType
   provider?: EmailProvider
   supabase_settings?: SupabaseIntegrationSettings
+  llm_provider?: LLMProvider
+  firecrawl_settings?: FirecrawlSettings
 }
 
 export interface UpdateIntegrationRequest {
@@ -235,6 +260,8 @@ export interface UpdateIntegrationRequest {
   name: string
   provider?: EmailProvider
   supabase_settings?: SupabaseIntegrationSettings
+  llm_provider?: LLMProvider
+  firecrawl_settings?: FirecrawlSettings
 }
 
 export interface DeleteIntegrationRequest {
@@ -300,6 +327,8 @@ export interface UserPermissions {
   workspace: ResourcePermissions
   message_history: ResourcePermissions
   blog: ResourcePermissions
+  automations: ResourcePermissions
+  llm: ResourcePermissions
 }
 
 // Set User Permissions types

@@ -15,9 +15,9 @@ func TestBroadcastStatus_Values(t *testing.T) {
 	// Verify all status constants are defined
 	assert.Equal(t, domain.BroadcastStatus("draft"), domain.BroadcastStatusDraft)
 	assert.Equal(t, domain.BroadcastStatus("scheduled"), domain.BroadcastStatusScheduled)
-	assert.Equal(t, domain.BroadcastStatus("sending"), domain.BroadcastStatusSending)
+	assert.Equal(t, domain.BroadcastStatus("processing"), domain.BroadcastStatusProcessing)
 	assert.Equal(t, domain.BroadcastStatus("paused"), domain.BroadcastStatusPaused)
-	assert.Equal(t, domain.BroadcastStatus("sent"), domain.BroadcastStatusSent)
+	assert.Equal(t, domain.BroadcastStatus("processed"), domain.BroadcastStatusProcessed)
 	assert.Equal(t, domain.BroadcastStatus("cancelled"), domain.BroadcastStatusCancelled)
 	assert.Equal(t, domain.BroadcastStatus("failed"), domain.BroadcastStatusFailed)
 }
@@ -348,9 +348,6 @@ func TestCreateBroadcastRequest_Validate(t *testing.T) {
 					List:                "list123",
 					ExcludeUnsubscribed: true,
 				},
-				Schedule: domain.ScheduleSettings{
-					IsScheduled: false,
-				},
 				TestSettings: domain.BroadcastTestSettings{
 					Enabled: false,
 				},
@@ -483,7 +480,7 @@ func TestUpdateBroadcastRequest_Validate(t *testing.T) {
 			errMsg:   "broadcast id cannot be changed",
 		},
 		{
-			name: "cannot update sent broadcast",
+			name: "cannot update processed broadcast",
 			request: domain.UpdateBroadcastRequest{
 				WorkspaceID: existingBroadcast.WorkspaceID,
 				ID:          existingBroadcast.ID,
@@ -491,14 +488,14 @@ func TestUpdateBroadcastRequest_Validate(t *testing.T) {
 			},
 			existing: func() domain.Broadcast {
 				b := existingBroadcast
-				b.Status = domain.BroadcastStatusSent
+				b.Status = domain.BroadcastStatusProcessed
 				return b
 			}(),
 			wantErr: true,
-			errMsg:  "cannot update broadcast with status: sent",
+			errMsg:  "cannot update broadcast with status: processed",
 		},
 		{
-			name: "cannot update sending broadcast",
+			name: "cannot update processing broadcast",
 			request: domain.UpdateBroadcastRequest{
 				WorkspaceID: existingBroadcast.WorkspaceID,
 				ID:          existingBroadcast.ID,
@@ -506,11 +503,11 @@ func TestUpdateBroadcastRequest_Validate(t *testing.T) {
 			},
 			existing: func() domain.Broadcast {
 				b := existingBroadcast
-				b.Status = domain.BroadcastStatusSending
+				b.Status = domain.BroadcastStatusProcessing
 				return b
 			}(),
 			wantErr: true,
-			errMsg:  "cannot update broadcast with status: sending",
+			errMsg:  "cannot update broadcast with status: processing",
 		},
 		{
 			name: "cannot update cancelled broadcast",
@@ -1821,23 +1818,20 @@ func TestScheduleSettings_ParseScheduledDateTime_Comprehensive(t *testing.T) {
 
 // Additional test cases for CreateBroadcastRequest.Validate
 func TestCreateBroadcastRequest_Validate_Additional(t *testing.T) {
-	// Test scheduled broadcast
-	scheduledRequest := domain.CreateBroadcastRequest{
+	// Test that broadcasts are always created in draft status
+	// Scheduling must be done via the ScheduleBroadcastRequest endpoint
+	request := domain.CreateBroadcastRequest{
 		WorkspaceID: "workspace123",
-		Name:        "Test Scheduled Newsletter",
+		Name:        "Test Newsletter",
 		Audience: domain.AudienceSettings{
 			List: "list123",
 		},
-		Schedule: domain.ScheduleSettings{
-			IsScheduled:   true,
-			ScheduledDate: "2023-12-31",
-			ScheduledTime: "15:30",
-		},
 	}
 
-	broadcast, err := scheduledRequest.Validate()
+	broadcast, err := request.Validate()
 	require.NoError(t, err)
-	assert.Equal(t, domain.BroadcastStatusScheduled, broadcast.Status)
+	assert.Equal(t, domain.BroadcastStatusDraft, broadcast.Status)
+	assert.False(t, broadcast.Schedule.IsScheduled, "Schedule should be empty - scheduling must be done via broadcasts.schedule endpoint")
 }
 
 // Additional test cases for UpdateBroadcastRequest.Validate

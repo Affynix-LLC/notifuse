@@ -9,6 +9,7 @@ import (
 
 	"github.com/Notifuse/notifuse/config"
 	"github.com/Notifuse/notifuse/internal/domain"
+	"github.com/Notifuse/notifuse/internal/service/queue"
 	"github.com/Notifuse/notifuse/pkg/logger"
 )
 
@@ -42,10 +43,12 @@ type AppInterface interface {
 	GetMessageHistoryRepository() domain.MessageHistoryRepository
 	GetContactListRepository() domain.ContactListRepository
 	GetTransactionalNotificationRepository() domain.TransactionalNotificationRepository
+	GetEmailQueueRepository() domain.EmailQueueRepository
 
 	// Service getters for testing
 	GetAuthService() interface{} // Returns *service.AuthService but defined as interface{} to avoid import cycle
 	GetTransactionalNotificationService() domain.TransactionalNotificationService
+	GetEmailQueueWorker() *queue.EmailQueueWorker
 }
 
 // NewServerManager creates a new server manager for testing
@@ -142,6 +145,18 @@ func (sm *ServerManager) Start() error {
 	// Direct execution is faster and more reliable for tests
 
 	sm.isStarted = true
+	return nil
+}
+
+// StartBackgroundWorkers starts the email queue worker and other background services
+// Call this after Start() when you need workers to process queued items
+func (sm *ServerManager) StartBackgroundWorkers(ctx context.Context) error {
+	worker := sm.app.GetEmailQueueWorker()
+	if worker != nil {
+		if err := worker.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start email queue worker: %w", err)
+		}
+	}
 	return nil
 }
 

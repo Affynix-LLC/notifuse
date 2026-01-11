@@ -95,6 +95,8 @@ paths:
     $ref: './paths/subscribe.yaml#/~1subscribe'
   /api/lists.subscribe:
     $ref: './paths/subscribe.yaml#/~1api~1lists.subscribe'
+  /api/user.rootSignin:
+    $ref: './paths/user.yaml#/~1api~1user.rootSignin'
 components:
   securitySchemes:
     BearerAuth:
@@ -194,6 +196,8 @@ components:
       $ref: './components/schemas/template.yaml#/CompileTemplateRequest'
     CompileTemplateResponse:
       $ref: './components/schemas/template.yaml#/CompileTemplateResponse'
+    TrackingSettings:
+      $ref: './components/schemas/template.yaml#/TrackingSettings'
     CustomEvent:
       $ref: './components/schemas/custom-event.yaml#/CustomEvent'
     ImportCustomEventsRequest:
@@ -240,3 +244,9 @@ components:
       $ref: './components/schemas/webhook-subscription.yaml#/TestWebhookResponse'
     ListWebhookEventTypesResponse:
       $ref: './components/schemas/webhook-subscription.yaml#/ListWebhookEventTypesResponse'
+    RootSigninRequest:
+      $ref: './components/schemas/user.yaml#/RootSigninRequest'
+    RootSigninResponse:
+      $ref: './components/schemas/user.yaml#/RootSigninResponse'
+    User:
+      $ref: './components/schemas/user.yaml#/User'

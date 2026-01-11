@@ -322,7 +322,7 @@ func TestTaskService_ExecuteTask(t *testing.T) {
 
 		// Mark as completed should succeed
 		mockRepo.EXPECT().
-			MarkAsCompleted(gomock.Any(), workspaceID, taskID).
+			MarkAsCompleted(gomock.Any(), workspaceID, taskID, gomock.Any()).
 			Return(nil)
 
 		// Call the method under test
@@ -878,7 +878,7 @@ func TestTaskService_BroadcastEventHandlers(t *testing.T) {
 			EntityID:    broadcastID,
 			Data: map[string]interface{}{
 				"send_now": true,
-				"status":   string(domain.BroadcastStatusSending),
+				"status":   string(domain.BroadcastStatusProcessing),
 			},
 		}
 
@@ -1359,7 +1359,7 @@ func TestTaskService_HandleBroadcastSent(t *testing.T) {
 
 		// Expect task to be marked as completed
 		mockRepo.EXPECT().
-			MarkAsCompleted(gomock.Any(), workspaceID, task.ID).
+			MarkAsCompleted(gomock.Any(), workspaceID, task.ID, gomock.Any()).
 			Return(nil)
 
 		// Call the event handler
@@ -1443,7 +1443,7 @@ func TestTaskService_HandleBroadcastSent(t *testing.T) {
 
 		// Expect mark as completed to fail
 		mockRepo.EXPECT().
-			MarkAsCompleted(gomock.Any(), workspaceID, task.ID).
+			MarkAsCompleted(gomock.Any(), workspaceID, task.ID, gomock.Any()).
 			Return(errors.New("operation failed"))
 
 		// Call the event handler
@@ -1815,7 +1815,7 @@ func TestTaskService_HandleBroadcastScheduledExtended(t *testing.T) {
 			EntityID:    broadcastID,
 			Data: map[string]interface{}{
 				"send_now": true,
-				"status":   string(domain.BroadcastStatusSending),
+				"status":   string(domain.BroadcastStatusProcessing),
 			},
 		}
 
@@ -1925,7 +1925,7 @@ func TestTaskService_HandleBroadcastScheduledExtended(t *testing.T) {
 			EntityID:    broadcastID,
 			Data: map[string]interface{}{
 				"send_now": true,
-				"status":   string(domain.BroadcastStatusSending),
+				"status":   string(domain.BroadcastStatusProcessing),
 			},
 		}
 
@@ -1964,7 +1964,7 @@ func TestTaskService_HandleBroadcastScheduledExtended(t *testing.T) {
 			EntityID:    broadcastID,
 			Data: map[string]interface{}{
 				"send_now": true,
-				"status":   string(domain.BroadcastStatusSending),
+				"status":   string(domain.BroadcastStatusProcessing),
 			},
 		}
 
@@ -2012,7 +2012,7 @@ func TestTaskService_HandleBroadcastScheduledExtended(t *testing.T) {
 			EntityID:    broadcastID,
 			Data: map[string]interface{}{
 				"send_now": true,
-				"status":   string(domain.BroadcastStatusSending),
+				"status":   string(domain.BroadcastStatusProcessing),
 			},
 		}
 
